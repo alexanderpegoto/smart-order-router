@@ -5,7 +5,8 @@ import os
 class Venues:
     """Class to structure simple list of objects per venue
     with different attributes"""
-    def __init__(self, ask, ask_size, fee, rebate):
+    def __init__(self,venue_id, ask, ask_size, fee, rebate):
+        self.venue_id = venue_id
         self.ask = ask        
         self.ask_size = ask_size
         self.fee = fee
@@ -103,4 +104,17 @@ def GridSearchCV(model, param_grid, ):
                         'theta_queue': theta_queue
                     }
     return best_params, best_score
+
+
+
+
+
+
+
+
+if __name__ == "__main__":
+    
+    
+    
+
 
