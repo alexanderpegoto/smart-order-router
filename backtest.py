@@ -1,16 +1,14 @@
 import pandas as pd
 import numpy as np
-import os
+from dataclasses import dataclass
 
+@dataclass
 class Venues:
-    """Class to structure simple list of objects per venue
-    with different attributes"""
-    def __init__(self,venue_id, ask, ask_size, fee, rebate):
-        self.venue_id = venue_id
-        self.ask = ask        
-        self.ask_size = ask_size
-        self.fee = fee
-        self.rebate = rebate
+    venue_id: int
+    ask: float
+    ask_size: float
+    fee: float = 0.003
+    rebate: float =0.002
         
 
 #Cost Function
@@ -19,8 +17,8 @@ def compute_cost(split, venues,order_size, lambda_o, lambda_u, theta_queue):
     based on venue and penalies incurred"""
     executed = 0
     cash_spent = 0
-    for i in range(0,len(venues)-1):
-        exe = min(split[i], venues[i].ask_price)
+    for i in range(0,len(venues)):
+        exe = min(split[i], venues[i].ask)
         executed += exe
         cash_spent += exe * (venues[i].ask + venues[i].fee)
         maker_rebate = max(split[i]-exe, 0) * venues[i].rebate
@@ -36,17 +34,17 @@ def compute_cost(split, venues,order_size, lambda_o, lambda_u, theta_queue):
 
 def allocate(order_size, venues, lambda_o, lambda_u, theta_queue):
     
-    """Static allocator based on GridSearchCV"""
+    """Static allocator based on model"""
     
     step = 100
     splits = [[]]
     
-    for v in range(0,len(venues)-1):
+    for v in range(len(venues)):
         new_split = []
         for alloc in splits:
             used = sum(alloc)
             max_v = min((order_size-used), venues[v].ask_size)
-            for q in range(0,max_v+step,step):
+            for q in range(0, max_v + step, step):
                 new_split.append(alloc +[q])
         splits = new_split
     
@@ -106,13 +104,58 @@ def GridSearchCV(model, param_grid, ):
     return best_params, best_score
 
 
+def simulate_trading(snapshots, lambda_o, lambda_u, theta_queue, order_target=5000):
+    """
+    Simulate trading across snapshots using allocator + cost model.
+
+    Inputs:
+        - snapshots: list of snapshots, each is a list of Venue objects
+        - order_target: total number of shares to buy (e.g. 5000)
+        - lambda_o, lambda_u, theta_queue: parameters to test
+
+    Returns:
+        - total_cost: total cost to execute the trade
+    """
+    remaining = order_target
+    total_cost = 0
+
+    for snapshot in snapshots:
+        # Decide how to split the remaining order
+        split, expected_cost = allocate(remaining, snapshot, lambda_o, lambda_u, theta_queue)
+        # execution
+        executed = 0
+        actual_cost = 0
+        for i, venue in enumerate(snapshot):
+            # we want to execute whichever is smallest
+            execute = min(split[i], venue.ask_size)
+            executed += execute
+            # Adding the cummulative cost inccured
+            cost = execute * (venue.ask + venue.fee)
+            # calculating rebate to calculate final cost
+            rebate = max(split[i] - execute, 0) * venue.rebate
+            actual_cost += cost - rebate
+
+        underfill = max(remaining - executed, 0)
+        overfill = max(executed - remaining, 0)
+        risk_penalty = theta_queue * (underfill + overfill)
+        cost_penalty = lambda_u * underfill + lambda_o * overfill
+
+        total_cost += actual_cost + risk_penalty + cost_penalty
+        remaining -= executed
+
+    return total_cost
 
 
 
 
 
 
-if __name__ == "__main__":
+
+
+
+
+
+# if __name__ == "__main__":
     
     
     
