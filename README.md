@@ -49,6 +49,16 @@ Allocates shares across venues proportionally to their displayed liquidity. Larg
 Splits the total order evenly across 60-second time intervals. Within each time bucket, it allocates to the best-priced venues first, aiming for smooth, time-distributed execution.
 
 ⸻
+Further Model Improvements & Suggestions:
+
+One area that could improve the realism of the model is the fill rate assumption. Through my research into market structure, I found that orders are often subject to queue uncertainty — meaning that even if the venue ask size shows 500 available shares, those shares might not be fully available to you, especially if you’re not at the front of the queue.
+
+To better reflect this uncertainty, we could introduce a probabilistic fill model, where only a portion of the displayed liquidity is assumed to be accessible based on a stochastic distribution. This would add a layer of realism to the simulator and align more closely with real-world trading behavior.
+
+If we wanted to take this even further, we could explore a Bayesian framework, where a prior distribution represents our belief about typical fill rates, and incoming execution data refines that belief through a likelihood function. This could dynamically adjust expected fill rates over time based on observed venue behavior.
+
+
+⸻
 
 Limitations & Use of AI
 
