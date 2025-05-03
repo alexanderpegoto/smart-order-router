@@ -1,6 +1,9 @@
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
+import itertools
+import json
+
 
 @dataclass
 class Venues:
@@ -62,46 +65,46 @@ def allocate(order_size, venues, lambda_o, lambda_u, theta_queue):
             
     return best_split, best_cost
 
-def GridSearchCV(model, param_grid, ):
-    """Function doing exhaustive search over specified parameters values 
-        for all combinations of parameters lambda and theta.
+def GridSearchCV(model, param_grid, sorted_snapshots):
+    """
+    Function doing exhaustive search over specified parameter values
+    for all combinations of parameters lambda and theta.
+    
+    Parameters:
+    -----
+    model: function
+        Model function that needs to be passed into the grid search to test
+        all possible combinations
+    param_grid: dict
+        Dictionary with a list of values for all parameters
         
-        Parameters:
-        -----
-        model: function
-            model of function that needs to be pass into the grid search to test
-            all possible combinations
-        param_grid: dict
-            dictionary with a list of values of all parameters
-            
-        Returns:
-        -----
-        best_params
-        best_score
-            
+    Returns:
+    -----
+    best_params: dict
+        Dictionary with the best parameter values
+    best_score: float
+        Score achieved with the best parameters
     """
     
-    lambda_over_list = list(param_grid['lambda_o'])
-    lambda_under_list = list(param_grid['lambda_u'])
-    theta_queue_list = list(param_grid['theta_queue'])
+    param_names = ['lambda_o', 'lambda_u', 'theta_queue']
+    param_values = [param_grid[name] for name in param_names]
 
     best_score = float("inf")
     best_params = None
     
+    for combination in itertools.product(*param_values):
+        lambda_o, lambda_u, theta_queue = combination
         
-    for lambda_over in lambda_over_list:
-        for lambda_under in lambda_under_list:
-            for theta_queue in theta_queue_list:
-                score = model(lambda_over, lambda_under, theta_queue)
-                
-                if score < best_score:
-                    best_score = score
-                    best_params = {
-                        'lambda_over': lambda_over,
-                        'lambda_under': lambda_under,
-                        'theta_queue': theta_queue
-                    }
-    return best_params, best_score
+        # In your current function, score is expected to be total_cost
+        result = model(lambda_o, lambda_u, theta_queue, sorted_snapshots)
+        score = result['total_cost']
+        
+        if score < best_score:
+            best_score = score
+            best_result = result
+    
+    return best_result
+
 
 
 def simulate_trading(lambda_o, lambda_u, theta_queue, snapshots, order_target=5000):
@@ -156,8 +159,7 @@ def simulate_trading(lambda_o, lambda_u, theta_queue, snapshots, order_target=50
         'params': (lambda_o, lambda_u, theta_queue),
         'executed_shares': executed_total,
         'total_cost': total_cost,
-        'avg_price': avg_price,
-        'details': execution_detail
+        'avg_price': avg_price
     }
 
 ############
@@ -205,6 +207,145 @@ def best_ask_strategy(sorted_snapshots, order_target=5000):
         'avg_price': avg_price
     }
     
+def vwap_strategy(sorted_snapshots, order_target=5000):
+    """
+    Implement a VWAP strategy that weights prices by displayed ask size.
+    """
+    remaining = order_target
+    total_cost = 0
+    executed_total = 0
+    
+    for ts, venues in sorted_snapshots:
+        if remaining <= 0:
+            break
+        
+        # Calculate total available volume across all venues
+        total_volume = sum(venue.ask_size for venue in venues)
+        
+        if total_volume <= 0:
+            continue
+        
+        # Allocate shares based on volume weight
+        allocations = []
+        for venue in venues:
+            # Weight by venue's ask size relative to total available
+            weight = venue.ask_size / total_volume
+            # Allocate shares proportionally
+            shares = min(remaining * weight, venue.ask_size)
+            allocations.append((venue, shares))
+        
+        # Execute allocations
+        snapshot_executed = 0
+        snapshot_cost = 0
+        
+        for venue, shares in allocations:
+            execute = min(int(shares), venue.ask_size) 
+            
+            if execute > 0:
+                # Calculate costs
+                share_cost = execute * venue.ask
+                fee_cost = execute * venue.fee
+                
+                snapshot_executed += execute
+                snapshot_cost += share_cost + fee_cost
+        
+        executed_total += snapshot_executed
+        total_cost += snapshot_cost
+        remaining -= snapshot_executed
+    
+    # Calculate average price
+    avg_price = total_cost / executed_total if executed_total > 0 else 0
+    
+    return {
+        'strategy': 'vwap',
+        'executed_shares': executed_total,
+        'total_cost': total_cost,
+        'avg_price': avg_price
+    }
+
+def twap_strategy(sorted_snapshots, order_target=5000):
+    """
+    Implement a 60-second-bucket TWAP strategy.
+    Splits the order evenly across 60-second time buckets.
+    """
+    remaining = order_target
+    total_cost = 0
+    executed_total = 0
+    
+    # Get timestamps and convert to seconds for bucketing
+    timestamps = [ts for ts, _ in sorted_snapshots]
+    if not timestamps:
+        return {
+            'strategy': 'twap',
+            'executed_shares': 0,
+            'total_cost': 0,
+            'avg_price': 0
+        }
+    
+    start_time = pd.to_datetime(timestamps[0])
+    end_time = pd.to_datetime(timestamps[-1])
+    total_seconds = (end_time - start_time).total_seconds()
+    
+    # Calculate number of 60-second buckets
+    num_buckets = max(1, int(total_seconds / 60))
+    shares_per_bucket = order_target / num_buckets
+    
+    # Create time buckets
+    current_bucket_end = start_time + pd.Timedelta(seconds=60)
+    bucket_shares_remaining = shares_per_bucket
+    
+    # Process each snapshot
+    for ts, venues in sorted_snapshots:
+        ts_datetime = pd.to_datetime(ts)
+        
+        # Check if we've moved to a new bucket
+        while ts_datetime > current_bucket_end and remaining > 0:
+            # Move to next bucket
+            current_bucket_end += pd.Timedelta(seconds=60)
+            bucket_shares_remaining = shares_per_bucket
+        
+
+        if bucket_shares_remaining <= 0:
+            continue
+        
+        # Calculate how many shares to execute in this snapshot
+        shares_to_execute = min(bucket_shares_remaining, remaining)
+        
+        # Sort venues by best price
+        sorted_venues = sorted(venues, key=lambda v: v.ask)
+    
+        snapshot_executed = 0
+        for venue in sorted_venues:
+            execute = min(shares_to_execute - snapshot_executed, venue.ask_size)
+            
+            if execute > 0:
+                execution_cost = execute * venue.ask + execute * venue.fee
+                snapshot_executed += execute
+                total_cost += execution_cost
+                
+
+                if snapshot_executed >= shares_to_execute:
+                    break
+        
+        # Update remaining shares
+        executed_total += snapshot_executed
+        remaining -= snapshot_executed
+        bucket_shares_remaining -= snapshot_executed
+        
+        # If order is complete, stop
+        if remaining <= 0:
+            break
+    
+    # Calculate average price
+    avg_price = total_cost / executed_total if executed_total > 0 else 0
+    
+    return {
+        'strategy': 'twap',
+        'executed_shares': executed_total,
+        'total_cost': total_cost,
+        'avg_price': avg_price
+    }
+    
 ####################
 ####################
 ####################
@@ -236,25 +377,67 @@ if __name__ == "__main__":
     
     # Define parameter grid
     param_grid = {
-        'lambda_o': [l for l in range(0.05,0.15,0.01)],
-        'lambda_u': [l for l in range(0.05,0.15,0.01)],
-        'theta_queue': [l for l in range(0.0001,0.001,0.0001)]
+    'lambda_o': list(np.arange(0.05, 0.15, 0.01)),
+    'lambda_u': list(np.arange(0.05, 0.15, 0.01)),
+    'theta_queue': list(np.arange(0.0001, 0.001, 0.0001))
     }
     
-    # Run grid search to find optimal parameters
     best_result = GridSearchCV(simulate_trading, param_grid, sorted_snapshots)
-    
-    # Run baseline strategies
     best_ask_result = best_ask_strategy(sorted_snapshots)
-    
-    # TODO: Implement TWAP and VWAP strategies
+    twap_result = twap_strategy(sorted_snapshots)
+    vwap_result = vwap_strategy(sorted_snapshots)
     
     # Calculate savings in basis points
     best_avg_price = best_result['avg_price']
     best_ask_avg_price = best_ask_result['avg_price']
     
+    # Calculate savings in basis points
+    best_avg_price = best_result['avg_price']
+    best_ask_avg_price = best_ask_result['avg_price']
+    twap_avg_price = twap_result['avg_price']
+    vwap_avg_price = vwap_result['avg_price']
     
+    savings_vs_best_ask = (best_ask_avg_price - best_avg_price) / best_ask_avg_price * 10000
+    savings_vs_twap = (twap_avg_price - best_avg_price) / twap_avg_price * 10000
+    savings_vs_vwap = (vwap_avg_price - best_avg_price) / vwap_avg_price * 10000
+    
+    # Format results as JSON
+    results = {
+        "best_parameters": {
+            "lambda_over": best_result['params'][0],
+            "lambda_under": best_result['params'][1],
+            "theta_queue": best_result['params'][2]
+        },
+        "our_model": {
+            "total_cost": best_result['total_cost'],
+            "avg_price": best_result['avg_price']
+        },
+        "best_ask": {
+            "total_cost": best_ask_result['total_cost'],
+            "avg_price": best_ask_result['avg_price']
+        },
+        "twap": {
+            "total_cost": twap_result['total_cost'],
+            "avg_price": twap_result['avg_price']
+        },
+        "vwap": {
+            "total_cost": vwap_result['total_cost'],
+            "avg_price": vwap_result['avg_price']
+        },
+        "savings_bps": {
+            "vs_best_ask": savings_vs_best_ask,
+            "vs_twap": savings_vs_twap,
+            "vs_vwap": savings_vs_vwap
+        }
+    }
 
+    # Print results as JSON
+    print(json.dumps(results, indent=2, sort_keys=False))
+    
+    with open("output_test.json", "w") as f:
+        json.dump(results, f, indent=2, sort_keys=False)
+    
+    
     
     
 
